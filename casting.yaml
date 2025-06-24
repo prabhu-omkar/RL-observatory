@@ -6,4 +6,4 @@ spec:
   deployment:
     flavor: compose
     mode: docker
- 
+  
