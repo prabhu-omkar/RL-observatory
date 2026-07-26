@@ -1,262 +1,178 @@
-﻿using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using Unity.MLAgents;
 using Unity.MLAgents.Sensors;
 using Unity.MLAgents.Actuators;
 
 /// <summary>
-/// Ball3DAgent -- Unity ML-Agents C# controller for the 3DBall platform balancing task.
+/// AgentScopeBalancer — Unity ML-Agents controller for the 3DBall balancing task.
 ///
-/// TASK DESCRIPTION
-/// -------------------------------------------------------------------------------
-/// A rigid-body ball is placed on top of a flat platform. The agent's job is
-/// to keep the ball balanced by tilting the platform along its X and Z axes.
-/// The episode ends when the ball falls off the platform, or when the
-/// configurable max step count is reached (success / timeout).
+/// ─────────────────────────────────────────────────────────────────────────────
+/// TASK:  Keep a rigid-body ball balanced on a tilting platform.
 ///
-/// OBSERVATION SPACE  (8 continuous values)
-/// -------------------------------------------------------------------------------
-///  [0]   Platform rotation X (euler, normalised to +/-1)
-///  [1]   Platform rotation Z (euler, normalised to +/-1)
-///  [2]   Ball X-position relative to platform centre
-///  [3]   Ball Y-position relative to platform centre
-///  [4]   Ball Z-position relative to platform centre
-///  [5]   Ball X-velocity
-///  [6]   Ball Y-velocity
-///  [7]   Ball Z-velocity
+/// OBSERVATIONS (Space Size = 8):
+///   [0]   Platform rotation (quaternion Z component)
+///   [1]   Platform rotation (quaternion X component)
+///   [2-4] Ball position relative to platform (X, Y, Z)
+///   [5-7] Ball linear velocity (X, Y, Z)
 ///
-/// ACTION SPACE  (2 continuous actions, each in [-1, 1])
-/// -------------------------------------------------------------------------------
-///  [0]   Tilt force along Z-axis (controls left / right lean)
-///  [1]   Tilt force along X-axis (controls forward / backward lean)
+/// ACTIONS (Continuous Size = 2):
+///   [0]   Tilt along Z-axis (horizontal / left-right)
+///   [1]   Tilt along X-axis (vertical / forward-back)
 ///
-/// REWARD STRUCTURE
-/// -------------------------------------------------------------------------------
-///  +0.1   per step  -- living reward to encourage survival
-///  -1.0   terminal  -- ball falls off platform (episode failure)
+/// REWARDS:
+///   +0.1  per step survived (living reward)
+///   -1.0  terminal penalty on ball drop (SetReward override)
 ///
-/// SETUP INSTRUCTIONS  (see README.md for full walkthrough)
-/// -------------------------------------------------------------------------------
-///  1. Import the ML-Agents Unity Package (Package Manager -> Add by name ->
-///     com.unity.ml-agents).
-///  2. Create a new scene or open an existing one.
-///  3. Add a Plane (or Cube scaled to a flat slab) -- this is the Platform.
-///  4. Add a Sphere -- this is the Ball. Add a Rigidbody to it.
-///  5. Attach THIS script to the Platform GameObject.
-///  6. Drag the Ball into the "Ball" field in the Inspector.
-///  7. Add a Decision Requester component (set Decision Period = 5).
-///  8. Add a Behavior Parameters component and configure it:
-///       Behavior Name     : Ball3DBrain
-///       Vector Observation: Space Size = 8
-///       Continuous Actions: 2
-///       Behavior Type     : Default (for training via Python)
-///  9. Press Play in Unity, then run:  python run_agent.py
+/// SETUP:
+///   1. Attach this script to the Platform (Cube, Scale 5×0.2×5)
+///   2. Create a Sphere with Rigidbody → drag into the "ball" field
+///   3. Add Decision Requester (Period = 5) + Behavior Parameters:
+///        Behavior Name: Ball3DBrain | Obs Size: 8 | Continuous: 2
+///   4. Press Play → run:  python run_agent.py
+/// ─────────────────────────────────────────────────────────────────────────────
 /// </summary>
-[RequireComponent(typeof(Rigidbody))]
-public class Ball3DAgent : Agent
+public class AgentScopeBalancer : Agent
 {
-    // --- Inspector-exposed fields -------------------------------------------
+    // ── Inspector ────────────────────────────────────────────────────────────
 
     [Header("Scene References")]
-    [Tooltip("The ball Rigidbody that the platform must balance.")]
-    public Rigidbody ball;
+    [Tooltip("The ball GameObject that the platform must balance.")]
+    public GameObject ball;
 
-    [Tooltip("The platform Transform (usually this GameObject).")]
-    public Transform platform;
+    [Header("Physics Tuning")]
+    [Tooltip("Tilt multiplier applied to each continuous action.")]
+    [Range(0.5f, 5f)]
+    public float tiltMultiplier = 2f;
 
-    [Header("Physics Settings")]
-    [Tooltip("Maximum tilt angle applied per action step (degrees).")]
-    [Range(1f, 30f)]
-    public float tiltForce = 10f;
+    [Tooltip("Random tilt range (degrees) applied to the platform on episode reset.")]
+    [Range(0f, 15f)]
+    public float resetTiltRange = 5f;
 
-    [Tooltip("How fast the platform rotates back towards neutral when no action is applied.")]
-    [Range(0f, 5f)]
-    public float resetSpeed = 1f;
-
-    [Header("Ball Spawn Randomisation")]
-    [Tooltip("Random offset radius for ball starting position on reset.")]
-    [Range(0f, 2f)]
-    public float spawnRadius = 1.5f;
-
-    [Tooltip("Random linear velocity magnitude given to ball on reset.")]
-    [Range(0f, 2f)]
-    public float spawnVelocity = 0.5f;
+    [Tooltip("Height above platform centre where the ball spawns on reset.")]
+    [Range(0.5f, 3f)]
+    public float ballSpawnHeight = 1.5f;
 
     [Header("Episode Termination")]
-    [Tooltip("Distance from platform centre beyond which the ball is considered fallen.")]
+    [Tooltip("Horizontal distance from centre beyond which the ball is 'fallen'.")]
     [Range(1f, 8f)]
-    public float fallThreshold = 3.0f;
+    public float fallDistanceThreshold = 3.5f;
 
-    [Tooltip("Height below which the ball is considered dropped off the platform.")]
-    public float dropHeightThreshold = -2f;
+    [Tooltip("Height below platform beyond which the ball is 'dropped'.")]
+    [Range(0.5f, 3f)]
+    public float fallHeightThreshold = 1f;
 
-    // --- Private state -------------------------------------------------------
+    // ── Private ──────────────────────────────────────────────────────────────
 
-    private Vector3 _initialBallPosition;
-    private Rigidbody _platformRb;
+    private Rigidbody ballRb;
 
-    // --- ML-Agents lifecycle overrides --------------------------------------
+    // ── Lifecycle ────────────────────────────────────────────────────────────
 
-    /// <summary>Called once by ML-Agents when the scene loads.</summary>
-    public override void Initialize()
+    void Start()
     {
-        _platformRb = GetComponent<Rigidbody>();
+        ballRb = ball.GetComponent<Rigidbody>();
 
-        // Make the platform kinematic -- physics only apply to the ball.
-        if (_platformRb != null)
-            _platformRb.isKinematic = true;
-
-        // Cache the ball local rest position above the platform centre.
-        if (ball != null)
-            _initialBallPosition = ball.transform.localPosition;
-
-        // Validate Inspector wiring.
-        if (ball == null)
-            Debug.LogError("[Ball3DAgent] Ball Rigidbody is not assigned in the Inspector!");
+        if (ballRb == null)
+            Debug.LogError("[AgentScopeBalancer] Ball is missing a Rigidbody component!");
     }
 
     /// <summary>
-    /// Called at the beginning of every episode.
-    /// Resets platform rotation and randomises ball start position / velocity.
+    /// Called at the start of every episode.
+    /// Resets platform with a small random tilt and repositions the ball.
     /// </summary>
     public override void OnEpisodeBegin()
     {
-        // Reset platform to flat (no tilt).
-        transform.rotation = Quaternion.identity;
-
-        if (ball == null) return;
-
-        // Randomise ball start position within a disc above the platform.
-        float rx = Random.Range(-spawnRadius, spawnRadius);
-        float rz = Random.Range(-spawnRadius, spawnRadius);
-        ball.transform.localPosition = _initialBallPosition + new Vector3(rx, 0f, rz);
-
-        // Zero existing velocity, then apply a small random impulse.
-        ball.linearVelocity = Vector3.zero;
-        ball.angularVelocity = Vector3.zero;
-
-        Vector3 randomImpulse = new Vector3(
-            Random.Range(-spawnVelocity, spawnVelocity),
+        // Reset platform with a slight random tilt to prevent trajectory memorisation.
+        transform.rotation = Quaternion.Euler(
+            Random.Range(-resetTiltRange, resetTiltRange),
             0f,
-            Random.Range(-spawnVelocity, spawnVelocity)
+            Random.Range(-resetTiltRange, resetTiltRange)
         );
-        ball.AddForce(randomImpulse, ForceMode.VelocityChange);
+
+        // Reset ball: zero velocity, reposition above platform centre.
+        ballRb.linearVelocity = Vector3.zero;
+        ballRb.angularVelocity = Vector3.zero;
+        ball.transform.position = new Vector3(
+            transform.position.x,
+            transform.position.y + ballSpawnHeight,
+            transform.position.z
+        );
     }
 
     /// <summary>
-    /// Called every Decision Period (set on DecisionRequester).
-    /// Appends all 8 observation values to the sensor buffer.
+    /// Collects 8 observations the neural network uses to decide actions.
     /// </summary>
     public override void CollectObservations(VectorSensor sensor)
     {
-        if (ball == null)
-        {
-            // Pad observations with zeros if ball reference is missing.
-            sensor.AddObservation(new float[8]);
-            return;
-        }
+        // Platform tilt — raw quaternion components (stable, no gimbal lock).
+        sensor.AddObservation(transform.rotation.z);                        // [0]
+        sensor.AddObservation(transform.rotation.x);                        // [1]
 
-        // Platform tilt (normalise euler angles from [0,360] to [-1,1] range).
-        sensor.AddObservation(NormaliseAngle(transform.rotation.eulerAngles.x));
-        sensor.AddObservation(NormaliseAngle(transform.rotation.eulerAngles.z));
+        // Ball position relative to platform centre (3 values).
+        sensor.AddObservation(ball.transform.position - transform.position); // [2-4]
 
-        // Ball position relative to platform centre.
-        Vector3 relativePos = ball.transform.localPosition;
-        sensor.AddObservation(relativePos.x);
-        sensor.AddObservation(relativePos.y);
-        sensor.AddObservation(relativePos.z);
-
-        // Ball velocity.
-        sensor.AddObservation(ball.linearVelocity.x);
-        sensor.AddObservation(ball.linearVelocity.y);
-        sensor.AddObservation(ball.linearVelocity.z);
+        // Ball velocity (3 values).
+        sensor.AddObservation(ballRb.linearVelocity);                       // [5-7]
     }
 
     /// <summary>
-    /// Called when the Python policy (or heuristic) sends an action.
-    /// actions.ContinuousActions[0] = Z-axis tilt
-    /// actions.ContinuousActions[1] = X-axis tilt
+    /// Receives 2 continuous actions from the policy and tilts the platform.
     /// </summary>
-    public override void OnActionReceived(ActionBuffers actions)
+    public override void OnActionReceived(ActionBuffers actionBuffers)
     {
-        if (ball == null) return;
+        var continuousActions = actionBuffers.ContinuousActions;
+        float tiltZ = tiltMultiplier * Mathf.Clamp(continuousActions[0], -1f, 1f);
+        float tiltX = tiltMultiplier * Mathf.Clamp(continuousActions[1], -1f, 1f);
 
-        float actionZ = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
-        float actionX = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
+        // Apply tilt — separate axis rotations for clean control.
+        transform.Rotate(new Vector3(0, 0, 1), tiltZ);
+        transform.Rotate(new Vector3(1, 0, 0), tiltX);
 
-        // Apply tilt as a direct rotation delta (scaled by tiltForce and dt).
-        transform.Rotate(
-            new Vector3(actionX * tiltForce, 0f, actionZ * tiltForce) * Time.fixedDeltaTime
-        );
+        // ── Reward ───────────────────────────────────────────────────────────
 
-        // --- Reward Structure ------------------------------------------------
-
-        // Living reward -- encourage the agent to keep the ball on the platform.
+        // Living reward: +0.1 per step survived.
         AddReward(0.1f);
 
-        // Check if ball has fallen off.
-        bool fallenOff =
-            Mathf.Abs(ball.transform.localPosition.x) > fallThreshold ||
-            Mathf.Abs(ball.transform.localPosition.z) > fallThreshold ||
-            ball.transform.position.y < (transform.position.y + dropHeightThreshold);
+        // Failure check: ball fell off the platform.
+        bool fallen =
+            ball.transform.position.y < transform.position.y - fallHeightThreshold ||
+            Mathf.Abs(ball.transform.position.x) > fallDistanceThreshold ||
+            Mathf.Abs(ball.transform.position.z) > fallDistanceThreshold;
 
-        if (fallenOff)
+        if (fallen)
         {
-            // Penalty and episode termination.
-            AddReward(-1f);
+            SetReward(-1f);  // Override cumulative reward with terminal penalty.
             EndEpisode();
         }
     }
 
     /// <summary>
-    /// Manual control for testing without ML-Agents (keyboard fallback).
-    /// WASD / Arrow keys tilt the platform.
+    /// Manual keyboard control for testing (WASD / Arrow Keys).
+    /// Set Behavior Type → Heuristic Only in the Inspector to use.
     /// </summary>
     public override void Heuristic(in ActionBuffers actionsOut)
     {
-        var continuousActions = actionsOut.ContinuousActions;
-
-        // Horizontal input = Z-axis tilt.
-        continuousActions[0] = -Input.GetAxis("Horizontal");
-        // Vertical input   = X-axis tilt.
-        continuousActions[1] =  Input.GetAxis("Vertical");
+        var continuousActionsOut = actionsOut.ContinuousActions;
+        continuousActionsOut[0] = Input.GetAxis("Horizontal"); // Tilt Z
+        continuousActionsOut[1] = Input.GetAxis("Vertical");   // Tilt X
     }
 
-    // --- Helper methods ------------------------------------------------------
-
-    /// <summary>
-    /// Normalises a Unity euler angle (0-360) to the range [-1, 1].
-    /// </summary>
-    private float NormaliseAngle(float angle)
-    {
-        // Wrap [0,360] to [-180,180] first.
-        if (angle > 180f) angle -= 360f;
-        // Normalise to [-1, 1] assuming max meaningful tilt is 90 degrees.
-        return angle / 90f;
-    }
-
-    // --- Gizmo visualisation (Editor only) -----------------------------------
+    // ── Editor Gizmos ────────────────────────────────────────────────────────
 
 #if UNITY_EDITOR
     private void OnDrawGizmos()
     {
         if (ball == null) return;
 
-        // Draw fall-threshold boundary as a wire cube in the Scene view.
+        // Yellow boundary box showing the fall threshold.
         Gizmos.color = Color.yellow;
-        Gizmos.matrix = transform.localToWorldMatrix;
         Gizmos.DrawWireCube(
-            Vector3.zero,
-            new Vector3(fallThreshold * 2f, 0.05f, fallThreshold * 2f)
+            transform.position,
+            new Vector3(fallDistanceThreshold * 2f, 0.1f, fallDistanceThreshold * 2f)
         );
 
-        // Draw a line from platform centre to ball.
+        // Green line from platform centre to ball.
         Gizmos.color = Color.green;
-        Gizmos.DrawLine(
-            transform.position,
-            ball.transform.position
-        );
+        Gizmos.DrawLine(transform.position, ball.transform.position);
     }
 #endif
 }
