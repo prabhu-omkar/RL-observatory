@@ -1,0 +1,86 @@
+# RL Observatory — Custom OTel Collector Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# This config defines the signal pipeline for the SigNoz OTel Collector.
+# It receives all three OTel signal types (traces, metrics, logs) over
+# OTLP/gRPC and OTLP/HTTP, processes them through batching and resource
+# detection, and exports them to ClickHouse for SigNoz to query.
+#
+# Mount this file into the collector container:
+#   volumes:
+#     - ./otel-collector-config.yaml:/etc/signoz/otel-collector-config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "*"
+
+processors:
+  # Batch telemetry to reduce export overhead.
+  batch:
+    send_batch_size: 10000
+    send_batch_max_size: 11000
+    timeout: 10s
+
+  # Enrich spans with host metadata for multi-node deployments.
+  resourcedetection:
+    detectors: [system]
+    system:
+      hostname_sources: ["os"]
+
+  # Limit memory usage to prevent OOM under high-throughput training.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 4000
+    spike_limit_mib: 512
+
+exporters:
+  # ClickHouse exporters — managed by SigNoz's internal schema.
+  clickhousetraces:
+    datasource: tcp://clickhouse:9000?database=signoz_traces
+
+  clickhousemetricswrite:
+    endpoint: tcp://clickhouse:9000?database=signoz_metrics
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  clickhouselogsexporter:
+    datasource: tcp://clickhouse:9000?database=signoz_logs
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters:  [clickhousetraces]
+
+    metrics:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [clickhousemetricswrite]
+
+    logs:
+      receivers:  [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters:  [clickhouselogsexporter]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

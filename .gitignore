@@ -1,0 +1,74 @@
+# RL Observatory — .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# ── IDE & Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ── Unity ─────────────────────────────────────────────────────────────────────
+# Uncomment the following if this repo contains a full Unity project.
+# We keep Assets/ tracked since it holds Ball3DAgent.cs.
+# [Ll]ibrary/
+# [Tt]emp/
+# [Oo]bj/
+# [Bb]uild/
+# [Bb]uilds/
+# [Ll]ogs/
+# [Uu]ser[Ss]ettings/
+# *.csproj
+# *.unityproj
+# *.sln
+# *.suo
+# *.tmp
+# *.user
+# *.userprefs
+# *.pidb
+# *.booproj
+# *.svd
+# *.pdb
+# *.mdb
+# *.opendb
+# *.VC.db
+
+# ── OS Artifacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Docker / Compose ─────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Environment / Secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Logs & Data ──────────────────────────────────────────────────────────────
+*.log
+logs/
+telemetry_dumps/

@@ -1,0 +1,17 @@
+# RL Observatory — Python Dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+# Install:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Unity ML-Agents Environment Interface
+mlagents-envs>=1.0.0
+
+# OpenTelemetry Core
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+
+# OpenTelemetry OTLP Exporters (gRPC)
+opentelemetry-exporter-otlp-proto-grpc>=1.20.0
+
+# Numerical Computing
+numpy>=1.24.0
